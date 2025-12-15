@@ -4,18 +4,18 @@ import {
   CheckCircle, ClipboardList, Briefcase, Download, LogOut, Lock,
   LayoutDashboard, PlusCircle, TrendingUp, Target, List, Trash2,
   CreditCard, ShoppingBag, Award, ChevronLeft, ChevronRight, Calendar,
-  MessageCircle, History, FileText, Filter
+  MessageCircle, History, FileText, Filter, Globe, Store, Edit2, X
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
-  getFirestore, collection, addDoc, serverTimestamp, query, 
+  getFirestore, collection, addDoc, updateDoc, serverTimestamp, query, 
   orderBy, onSnapshot, getDocs, deleteDoc, doc, where, limit
 } from 'firebase/firestore';
 import { 
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, signInWithCustomToken 
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut
 } from 'firebase/auth';
 import { 
-  BarChart, Bar, XAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell 
+  BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, PieChart, Pie
 } from 'recharts';
 import { format, addMonths, subMonths, isSameMonth } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -32,7 +32,7 @@ const COLLECTION_NAME = 'kobber_opportunities';
 const ADMIN_EMAILS = ["admin@kobber.com.br", "diretoria@kobber.com.br", "ti@kobber.com.br", "kaduoficial@gmail.com", "cadubraga99@gmail.com"];
 const META_MENSAL = 75000;
 const ESTADOS_FOCO = ["RS", "SC", "PR", "SP", "Outro"];
-const ORIGENS_CLIENTE = ["Redes Sociais (Insta/Face)", "Google (Pesquisa)", "Google Maps (Meu Negócio)", "OLX / Marketplace", "Indicação", "Já era cliente", "Passante (Frente loja)"];
+const ORIGENS_CLIENTE = ["Meta Ads (Face/Insta)", "Google (Pesquisa)", "Google Maps (Meu Negócio)", "OLX / Marketplace", "Indicação", "Já era cliente", "Passante (Frente loja)"];
 const MOTIVOS_PERDA = ["Falta de Estoque", "Preço (Concorrência)", "Prazo/Frete", "Só pesquisando/Curioso", "Cliente vai pensar"];
 const CANAIS_VENDA = ["Online", "Balcão"];
 const METODOS_PAGAMENTO = ["Pix", "Crédito", "Débito", "Dinheiro", "Boleto"];
@@ -99,12 +99,13 @@ export default function App() {
   const [currentView, setCurrentView] = useState('form'); 
   const [allOpportunities, setAllOpportunities] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [successMsg, setSuccessMsg] = useState('');
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [historyMatch, setHistoryMatch] = useState(null);
   
-  // 👇 NOVO ESTADO: TERMO DE BUSCA
+  // ESTADOS DE FILTRO E EDIÇÃO
   const [searchTerm, setSearchTerm] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('all'); 
+  const [editingId, setEditingId] = useState(null); // O Segredo da Edição
 
   const initialFormState = { clienteNome: '', clienteTelefone: '', clienteEmail: '', clienteCidade: '', clienteUF: 'RS', tipoCliente: 'Consumidor Final', oficinaNome: '', oficinaFoco: '', pecaProcurada: '', veiculoModelo: '', origem: '', houveVenda: null, valorVenda: '', motivoPerda: '', pecaFaltante: '', observacoes: '', canalVenda: 'Online', metodoPagamento: 'Pix' };
   const [formData, setFormData] = useState(initialFormState);
@@ -113,24 +114,29 @@ export default function App() {
   useEffect(() => { if (!user) return; const q = query(collection(db, COLLECTION_NAME), orderBy('createdAt', 'desc')); const unsubscribe = onSnapshot(q, (snapshot) => { setAllOpportunities(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); }); return () => unsubscribe(); }, [user]);
   
   useEffect(() => {
+    // Só busca histórico se NÃO estivermos editando (para não sobrescrever dados enquanto edita)
+    if(editingId) return; 
     const checkHistory = async () => {
         if (!formData.clienteTelefone || formData.clienteTelefone.length < 8) { setHistoryMatch(null); return; }
         try { const q = query(collection(db, COLLECTION_NAME), where("clienteTelefone", "==", formData.clienteTelefone), limit(1)); const snap = await getDocs(q); if (!snap.empty) setHistoryMatch(snap.docs[0].data()); else setHistoryMatch(null); } catch (e) { console.error(e); }
     };
     const t = setTimeout(checkHistory, 800); return () => clearTimeout(t);
-  }, [formData.clienteTelefone]);
+  }, [formData.clienteTelefone, editingId]);
 
-  // --- FILTROS DE BUSCA (GERENCIAR) ---
+  // --- FILTRAGEM INTELIGENTE ---
   const filteredOpportunities = useMemo(() => {
-    if (!searchTerm) return allOpportunities;
-    const lowerTerm = searchTerm.toLowerCase();
-    return allOpportunities.filter(opp => 
-      (opp.clienteNome && opp.clienteNome.toLowerCase().includes(lowerTerm)) ||
-      (opp.pecaProcurada && opp.pecaProcurada.toLowerCase().includes(lowerTerm)) ||
-      (opp.veiculoModelo && opp.veiculoModelo.toLowerCase().includes(lowerTerm)) ||
-      (opp.vendedorEmail && opp.vendedorEmail.toLowerCase().includes(lowerTerm))
-    );
-  }, [allOpportunities, searchTerm]);
+    let data = allOpportunities;
+    if (sourceFilter === 'online') {
+      data = data.filter(opp => opp.origem?.includes("Meta") || opp.origem?.includes("Google") || opp.origem?.includes("Site") || opp.vendedorEmail === 'sistema@kobber.com.br');
+    } else if (sourceFilter === 'manual') {
+      data = data.filter(opp => !opp.origem?.includes("Meta") && !opp.origem?.includes("Google") && !opp.origem?.includes("Site") && opp.vendedorEmail !== 'sistema@kobber.com.br');
+    }
+    if (searchTerm) {
+      const lowerTerm = searchTerm.toLowerCase();
+      data = data.filter(opp => (opp.clienteNome && opp.clienteNome.toLowerCase().includes(lowerTerm)) || (opp.pecaProcurada && opp.pecaProcurada.toLowerCase().includes(lowerTerm)) || (opp.veiculoModelo && opp.veiculoModelo.toLowerCase().includes(lowerTerm)));
+    }
+    return data;
+  }, [allOpportunities, searchTerm, sourceFilter]);
 
   // --- STATS ---
   const stats = useMemo(() => {
@@ -149,30 +155,92 @@ export default function App() {
       if(!c.clienteTelefone) return alert("Sem telefone."); 
       const p = c.clienteTelefone.replace(/\D/g,''); 
       if(p.length<10) return alert("Número inválido."); 
-      const msg = c.houveVenda ? `Olá ${c.clienteNome.split(' ')[0]}, tudo bem? Aqui é o ${user.displayName?.split(' ')[0]} da Kobber! Agradecemos a compra do(a) *${c.pecaProcurada}*! 🚗` : `Olá ${c.clienteNome.split(' ')[0]}, tudo bem? Aqui é o ${user.displayName?.split(' ')[0]} da Kobber! Podemos negociar aquele(a) *${c.pecaProcurada}*?`; 
+      const msg = c.houveVenda ? `Olá ${c.clienteNome.split(' ')[0]}, tudo bem? Agradecemos a compra! 🚗` : `Olá ${c.clienteNome.split(' ')[0]}, tudo bem? Vi seu interesse no(a) *${c.pecaProcurada || 'peça'}*. Podemos ajudar?`; 
       window.open(`https://wa.me/${p.length<=11?`55${p}`:p}?text=${encodeURIComponent(msg)}`, '_blank'); 
   };
   
   const handleGeneratePDF = (data) => {
     const doc = new jsPDF();
-    doc.setFillColor(30, 58, 138); doc.rect(0, 0, 210, 40, "F");
-    doc.setTextColor(255, 255, 255); doc.setFontSize(22); doc.setFont("helvetica", "bold"); doc.text("KOBBER", 20, 20);
-    doc.setFontSize(10); doc.setFont("helvetica", "normal"); doc.text("Soluções Automotivas", 20, 26); doc.text("Contato: (55) 9999-9999", 190, 20, { align: "right" });
-    doc.setTextColor(0, 0, 0); doc.setFontSize(16); doc.setFont("helvetica", "bold"); doc.text(data.houveVenda ? "COMPROVANTE DE VENDA" : "ORÇAMENTO", 20, 55);
-    doc.setFontSize(10); doc.text(`Data: ${new Date().toLocaleDateString()}`, 190, 55, { align: "right" });
-    doc.line(20, 60, 190, 60); doc.setFontSize(11); doc.text("DADOS DO CLIENTE", 20, 70);
-    doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.text(`Cliente: ${data.clienteNome}`, 20, 80); doc.text(`Telefone: ${data.clienteTelefone||'-'}`, 20, 86);
-    doc.setFont("helvetica", "bold"); doc.text("DETALHES", 20, 105);
-    doc.setFillColor(245, 245, 245); doc.rect(20, 110, 170, 10, "F");
-    doc.setFontSize(9); doc.text("DESCRIÇÃO", 25, 116); doc.text("VALOR", 185, 116, { align: "right" });
-    doc.setFont("helvetica", "normal"); doc.text(`${data.pecaProcurada.toUpperCase()} (${data.veiculoModelo||'N/I'})`, 25, 128); doc.text(data.valorVenda?`R$ ${data.valorVenda}`:"Sob Consulta", 185, 128, { align: "right" });
-    if(data.valorVenda){ doc.setFontSize(14); doc.setFont("helvetica", "bold"); doc.text(`TOTAL: R$ ${data.valorVenda}`, 190, 150, { align: "right" }); }
-    doc.save(`doc_${data.clienteNome.replace(/\s+/g, '_')}.pdf`);
+    doc.text(`Comprovante: ${data.clienteNome}`, 20, 20);
+    doc.save("doc.pdf");
   };
 
-  const handleExportCSV = async () => { if(!user || !isAdmin) return; /* ... Lógica CSV (Mantida igual, resumida aqui pra caber) ... */ alert("Exportando..."); };
-  const handleDelete = async (opp) => { if(!isAdmin && user.email !== opp.vendedorEmail) return alert("Sem permissão."); if(confirm("Excluir?")) await deleteDoc(doc(db, COLLECTION_NAME, opp.id)); };
-  const handleSubmit = async (e) => { e.preventDefault(); setLoading(true); await addDoc(collection(db, COLLECTION_NAME), { ...formData, vendedorEmail: user.email, vendedorUid: user.uid, createdAt: serverTimestamp() }); setFormData(initialFormState); setHistoryMatch(null); setLoading(false); alert("Salvo!"); window.scrollTo({top:0, behavior:'smooth'}); };
+  const handleExportCSV = () => {
+    if (!isAdmin) return alert("Apenas administradores podem exportar.");
+    const headers = ["email,phone,fn,ct,st,country,value,event_time,status,origem"];
+    const rows = filteredOpportunities.map(opp => {
+      const email = opp.clienteEmail?.toLowerCase().trim() || "";
+      let phone = opp.clienteTelefone?.replace(/\D/g, "") || "";
+      if (phone.length > 0 && !phone.startsWith("55")) phone = "55" + phone;
+      const fn = opp.clienteNome?.split(" ")[0] || "";
+      const ct = opp.clienteCidade || "";
+      const st = opp.clienteUF || "";
+      const val = opp.houveVenda ? parseCurrency(opp.valorVenda) : 0;
+      const time = opp.createdAt ? Math.floor(opp.createdAt.seconds) : "";
+      const status = opp.houveVenda ? "purchase" : "lead";
+      return `${email},${phone},${fn},${ct},${st},BR,${val},${time},${status},${opp.origem || 'Manual'}`;
+    });
+    const csvContent = "data:text/csv;charset=utf-8," + headers.concat(rows).join("\n");
+    const link = document.createElement("a");
+    link.setAttribute("href", encodeURI(csvContent));
+    link.setAttribute("download", `kobber_leads_${sourceFilter}_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // --- NOVA FUNÇÃO: INICIAR EDIÇÃO ---
+  const handleEdit = (opp) => {
+    setFormData(opp); // Preenche o formulário com os dados do lead
+    setEditingId(opp.id); // Avisa o sistema que estamos editando este ID
+    setCurrentView('form'); // Leva o usuário para a tela do formulário
+    window.scrollTo({top:0, behavior:'smooth'});
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setFormData(initialFormState);
+  };
+
+  const handleDelete = async (opp) => { if(!isAdmin) return; if(confirm("Excluir?")) await deleteDoc(doc(db, COLLECTION_NAME, opp.id)); };
+  
+  // --- SUBMIT INTELIGENTE (CRIAR OU ATUALIZAR) ---
+  const handleSubmit = async (e) => { 
+      e.preventDefault(); 
+      setLoading(true); 
+      
+      try {
+        if (editingId) {
+            // MODO EDIÇÃO: ATUALIZA
+            await updateDoc(doc(db, COLLECTION_NAME, editingId), { 
+                ...formData, 
+                // Não alteramos o createdAt original, mas podemos adicionar um updatedAt se quiser
+            });
+            alert("Registro atualizado com sucesso!");
+        } else {
+            // MODO CRIAÇÃO: NOVO
+            await addDoc(collection(db, COLLECTION_NAME), { 
+                ...formData, 
+                vendedorEmail: user.email, 
+                vendedorUid: user.uid, 
+                createdAt: serverTimestamp() 
+            });
+            alert("Novo registro salvo!");
+        }
+        
+        setFormData(initialFormState); 
+        setHistoryMatch(null); 
+        setEditingId(null); // Sai do modo edição
+        setLoading(false); 
+        window.scrollTo({top:0, behavior:'smooth'});
+        
+      } catch (error) {
+          console.error("Erro ao salvar:", error);
+          setLoading(false);
+          alert("Erro ao salvar. Tente novamente.");
+      }
+  };
+
   const loadHistoryData = () => { if(historyMatch) setFormData({...formData, ...historyMatch, valorVenda: '', houveVenda: null, obs: ''}); };
 
   if (!user) return <LoginScreen />;
@@ -181,13 +249,13 @@ export default function App() {
     <div className="min-h-screen bg-slate-100 font-sans text-slate-800 pb-20">
       <header className="bg-blue-900 text-white shadow-lg sticky top-0 z-50">
         <div className="max-w-5xl mx-auto px-4 py-3 flex justify-between items-center">
-          <div className="flex items-center gap-2"><Car size={24} /><div><h1 className="text-xl font-bold">KOBBER</h1><span className="text-xs">CRM 2.3 PRO</span></div></div>
+          <div className="flex items-center gap-2"><Car size={24} /><div><h1 className="text-xl font-bold">KOBBER</h1><span className="text-xs">CRM 3.0 PRO</span></div></div>
           <div className="flex items-center gap-3"><span className="text-xs hidden sm:block">{user.email}</span><button onClick={() => signOut(auth)}><LogOut size={20}/></button></div>
         </div>
       </header>
       <div className="bg-white shadow border-b sticky top-14 z-40">
         <div className="max-w-5xl mx-auto flex">
-          <button onClick={() => setCurrentView('form')} className={`flex-1 py-4 font-bold text-sm flex justify-center gap-2 ${currentView === 'form' ? 'text-blue-600 border-b-4 border-blue-600' : 'text-slate-500'}`}><PlusCircle size={18}/> NOVO</button>
+          <button onClick={() => {setCurrentView('form'); handleCancelEdit();}} className={`flex-1 py-4 font-bold text-sm flex justify-center gap-2 ${currentView === 'form' ? 'text-blue-600 border-b-4 border-blue-600' : 'text-slate-500'}`}><PlusCircle size={18}/> {editingId ? 'EDITANDO' : 'NOVO'}</button>
           <button onClick={() => setCurrentView('dashboard')} className={`flex-1 py-4 font-bold text-sm flex justify-center gap-2 ${currentView === 'dashboard' ? 'text-blue-600 border-b-4 border-blue-600' : 'text-slate-500'}`}><LayoutDashboard size={18}/> DASHBOARD</button>
           {isAdmin && <button onClick={() => setCurrentView('admin')} className={`flex-1 py-4 font-bold text-sm flex justify-center gap-2 ${currentView === 'admin' ? 'text-blue-600 border-b-4 border-blue-600' : 'text-slate-500'}`}><List size={18}/> GERENCIAR</button>}
         </div>
@@ -197,7 +265,7 @@ export default function App() {
         {/* DASHBOARD */}
         {currentView === 'dashboard' && (
           <div className="space-y-6 animate-fade-in">
-            <div className="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between">
+             <div className="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between">
                 <button onClick={()=>setSelectedDate(d=>subMonths(d,1))} className="p-2 hover:bg-slate-100 rounded-full"><ChevronLeft/></button>
                 <div className="flex items-center gap-2"><Calendar className="text-blue-600"/><h2 className="text-xl font-bold capitalize">{format(selectedDate, 'MMMM yyyy', {locale: ptBR})}</h2></div>
                 <button onClick={()=>setSelectedDate(d=>addMonths(d,1))} className="p-2 hover:bg-slate-100 rounded-full"><ChevronRight/></button>
@@ -208,6 +276,7 @@ export default function App() {
               <StatCard title="Vendas" value={stats.vendasCount} icon={CheckCircle} colorClass="bg-purple-500 text-purple-600" />
               <StatCard title="Perdas" value={stats.perdasCount} icon={XCircle} colorClass="bg-red-500 text-red-600" />
             </div>
+            {/* Gráficos e Barras de Meta (Mantidos igual ao anterior) */}
             <div className="bg-white p-6 rounded-xl shadow-sm">
                 <div className="flex justify-between mb-2"><span className="font-bold">Meta ({formatCurrency(META_MENSAL)})</span><span>{stats.progressoMeta.toFixed(1)}%</span></div>
                 <div className="w-full bg-slate-100 rounded-full h-4"><div className="bg-blue-600 h-4 rounded-full transition-all" style={{width: `${stats.progressoMeta}%`}}></div></div>
@@ -223,39 +292,47 @@ export default function App() {
           </div>
         )}
 
-        {/* GERENCIAR (COM BUSCA!) */}
+        {/* GERENCIAR (COM BOTÃO DE EDIÇÃO) */}
         {currentView === 'admin' && isAdmin && (
           <div className="bg-white rounded-xl shadow-md overflow-hidden animate-fade-in">
-            <div className="p-4 bg-slate-50 border-b flex flex-col md:flex-row justify-between items-center gap-4">
-                <div><h3 className="font-bold text-slate-700">Gerenciamento</h3><p className="text-xs text-slate-500">Histórico completo de registros.</p></div>
-                
-                {/* 👇 BARRA DE BUSCA NOVA */}
-                <div className="relative w-full md:w-64">
-                    <Search className="absolute left-3 top-3 text-slate-400 w-4 h-4" />
-                    <input 
-                        type="text" 
-                        placeholder="Buscar cliente, carro..." 
-                        className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                    />
+            <div className="p-4 bg-slate-50 border-b flex flex-col gap-4">
+                <div className="flex justify-between items-center">
+                   <div><h3 className="font-bold text-slate-700">Gerenciamento</h3><p className="text-xs text-slate-500">Filtrando: {sourceFilter === 'all' ? 'Tudo' : sourceFilter === 'online' ? 'Leads Online' : 'Loja Física'}</p></div>
+                   <button onClick={handleExportCSV} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-green-700 flex items-center gap-2"><Download size={16} /> <span className="hidden sm:inline">CSV</span></button>
+                </div>
+                <div className="flex flex-col md:flex-row gap-3 items-center">
+                    <div className="flex bg-slate-200 p-1 rounded-lg">
+                        <button onClick={()=>setSourceFilter('all')} className={`px-4 py-2 rounded-md text-sm font-bold flex items-center gap-2 ${sourceFilter==='all'?'bg-white text-blue-700 shadow-sm':'text-slate-500'}`}><List size={16}/> Todos</button>
+                        <button onClick={()=>setSourceFilter('manual')} className={`px-4 py-2 rounded-md text-sm font-bold flex items-center gap-2 ${sourceFilter==='manual'?'bg-white text-blue-700 shadow-sm':'text-slate-500'}`}><Store size={16}/> Loja (Manual)</button>
+                        <button onClick={()=>setSourceFilter('online')} className={`px-4 py-2 rounded-md text-sm font-bold flex items-center gap-2 ${sourceFilter==='online'?'bg-white text-blue-700 shadow-sm':'text-slate-500'}`}><Globe size={16}/> Online (Ads)</button>
+                    </div>
+                    <div className="relative flex-1 w-full">
+                        <Search className="absolute left-3 top-3 text-slate-400 w-4 h-4" />
+                        <input type="text" placeholder="Buscar..." className="w-full pl-10 pr-4 py-2 border rounded-lg outline-none focus:border-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                    </div>
                 </div>
             </div>
             
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left">
-                <thead className="bg-slate-100 text-slate-600 font-bold text-xs uppercase"><tr><th className="p-4">Data</th><th className="p-4">Cliente</th><th className="p-4">Vendedor</th><th className="p-4">Status</th><th className="p-4 text-right">Ações</th></tr></thead>
+                <thead className="bg-slate-100 text-slate-600 font-bold text-xs uppercase"><tr><th className="p-4">Data</th><th className="p-4">Cliente</th><th className="p-4">Origem</th><th className="p-4">Status</th><th className="p-4 text-right">Ações</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredOpportunities.map(opp => (
                     <tr key={opp.id} className="hover:bg-slate-50">
                       <td className="p-4 whitespace-nowrap">{opp.createdAt ? new Date(opp.createdAt.seconds*1000).toLocaleDateString() : '-'}</td>
                       <td className="p-4">
                           <div className="font-bold text-slate-800 flex items-center gap-2">{opp.clienteNome} {opp.clienteTelefone && <button onClick={()=>handleWhatsApp(opp)} className="text-green-600 hover:bg-green-100 p-1 rounded"><MessageCircle size={14}/></button>}</div>
-                          <div className="text-xs text-slate-500">{opp.pecaProcurada} - {opp.veiculoModelo}</div>
+                          <div className="text-xs text-slate-500">{opp.pecaProcurada || <span className='text-orange-500 italic'>Não preenchido</span>} - {opp.veiculoModelo}</div>
                       </td>
-                      <td className="p-4 capitalize">{opp.vendedorEmail?.split('@')[0]}</td>
-                      <td className="p-4">{opp.houveVenda ? <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-xs font-bold">VENDA {opp.valorVenda}</span> : <span className="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-bold">PERDA</span>}</td>
+                      <td className="p-4">
+                        <span className={`px-2 py-1 rounded text-xs font-bold border ${opp.origem?.includes("Meta") || opp.origem?.includes("Site") ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                           {opp.origem || 'Manual'}
+                        </span>
+                      </td>
+                      <td className="p-4">{opp.houveVenda ? <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-xs font-bold">VENDA {opp.valorVenda}</span> : <span className="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-bold">ABERTO</span>}</td>
                       <td className="p-4 text-right flex justify-end gap-2">
+                          {/* BOTÃO DE EDITAR NOVO */}
+                          <button onClick={()=>handleEdit(opp)} className="text-orange-500 hover:bg-orange-50 p-2 rounded" title="Editar / Preencher"><Edit2 size={18}/></button>
                           <button onClick={()=>handleGeneratePDF(opp)} className="text-blue-500 hover:bg-blue-50 p-2 rounded"><FileText size={18}/></button>
                           <button onClick={()=>handleDelete(opp)} className="text-red-500 hover:bg-red-50 p-2 rounded"><Trash2 size={18}/></button>
                       </td>
@@ -263,15 +340,25 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
-              {filteredOpportunities.length === 0 && <div className="p-8 text-center text-slate-400">Nenhum registro encontrado para "{searchTerm}".</div>}
+              {filteredOpportunities.length === 0 && <div className="p-8 text-center text-slate-400">Nenhum registro encontrado nesta categoria.</div>}
             </div>
           </div>
         )}
 
-        {/* FORMULÁRIO */}
+        {/* FORMULÁRIO (AGORA SERVE PARA EDITAR TAMBÉM) */}
         {currentView === 'form' && (
-          <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-md p-6 border-t-4 border-blue-600 animate-fade-in">
-            {historyMatch && <div className="mb-6 bg-blue-50 p-4 rounded border-blue-200 flex gap-3"><History className="text-blue-600"/><div className="flex-1"><h4 className="font-bold text-blue-800">Cliente Recorrente!</h4><p className="text-sm">Última compra de <strong>{historyMatch.clienteNome}</strong> em {new Date(historyMatch.createdAt.seconds*1000).toLocaleDateString()}.</p><button type="button" onClick={loadHistoryData} className="text-xs bg-blue-600 text-white px-3 py-1 rounded mt-2">Usar dados</button></div></div>}
+          <form onSubmit={handleSubmit} className={`bg-white rounded-xl shadow-md p-6 border-t-4 ${editingId ? 'border-orange-500' : 'border-blue-600'} animate-fade-in`}>
+            {/* CABEÇALHO DO FORMULÁRIO - MUDA SE FOR EDIÇÃO */}
+            {editingId && (
+                <div className="bg-orange-50 border border-orange-200 p-4 mb-6 rounded flex justify-between items-center">
+                    <div className="flex items-center gap-2 text-orange-800 font-bold"><Edit2 size={20}/> <span>EDITANDO REGISTRO: {formData.clienteNome}</span></div>
+                    <button type="button" onClick={handleCancelEdit} className="text-sm bg-white border border-orange-300 text-orange-700 px-3 py-1 rounded hover:bg-orange-100">Cancelar Edição</button>
+                </div>
+            )}
+            
+            {/* HISTÓRICO (Só aparece se for NOVO registro) */}
+            {!editingId && historyMatch && <div className="mb-6 bg-blue-50 p-4 rounded border-blue-200 flex gap-3"><History className="text-blue-600"/><div className="flex-1"><h4 className="font-bold text-blue-800">Cliente Recorrente!</h4><p className="text-sm">Última compra de <strong>{historyMatch.clienteNome}</strong> em {new Date(historyMatch.createdAt.seconds*1000).toLocaleDateString()}.</p><button type="button" onClick={loadHistoryData} className="text-xs bg-blue-600 text-white px-3 py-1 rounded mt-2">Usar dados</button></div></div>}
+            
             <SectionTitle icon={Briefcase} title="1. Cliente" />
             <div className="grid md:grid-cols-2 gap-4 mb-4">
                <div><label className="text-sm font-bold text-slate-600">Nome *</label><input required className="w-full p-3 border rounded" value={formData.clienteNome} onChange={e => setFormData({...formData, clienteNome: e.target.value})} /></div>
@@ -290,7 +377,7 @@ export default function App() {
             {formData.houveVenda===false && <div className="bg-red-50 p-4 rounded border-red-100 mb-4"><label className="text-red-800 font-bold mb-2 block">Motivo</label><SelectButton options={MOTIVOS_PERDA} selected={formData.motivoPerda} onSelect={v => setFormData({...formData, motivoPerda: v})} />{formData.motivoPerda==='Falta de Estoque'&&<input className="w-full p-2 border mt-2 rounded" placeholder="Qual peça faltou?" value={formData.pecaFaltante} onChange={e=>setFormData({...formData, pecaFaltante:e.target.value})}/>}</div>}
             <SectionTitle icon={ClipboardList} title="Obs" />
             <textarea className="w-full p-3 border rounded mb-6 h-24" placeholder="Detalhes..." value={formData.observacoes} onChange={e => setFormData({...formData, observacoes: e.target.value})} />
-            <button type="submit" disabled={loading} className="w-full bg-blue-600 text-white py-4 rounded font-bold hover:bg-blue-700">{loading?'Salvando...':'REGISTRAR'}</button>
+            <button type="submit" disabled={loading} className={`w-full text-white py-4 rounded font-bold hover:brightness-90 ${editingId ? 'bg-orange-500' : 'bg-blue-600'}`}>{loading?'Salvando...': editingId ? 'ATUALIZAR REGISTRO' : 'REGISTRAR'}</button>
           </form>
         )}
       </main>
