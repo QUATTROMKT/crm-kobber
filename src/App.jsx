@@ -32,7 +32,7 @@ const COLLECTION_NAME = 'kobber_opportunities';
 const ADMIN_EMAILS = ["admin@kobber.com.br", "diretoria@kobber.com.br", "ti@kobber.com.br", "kaduoficial@gmail.com", "cadubraga99@gmail.com"];
 const META_MENSAL = 75000;
 const ESTADOS_FOCO = ["RS", "SC", "PR", "SP", "Outro"];
-const ORIGENS_CLIENTE = ["Meta Ads (Face/Insta)", "Google (Pesquisa)", "Google Maps (Meu Negócio)", "OLX / Marketplace", "Indicação", "Já era cliente", "Passante (Frente loja)"];
+const ORIGENS_CLIENTE = ["Meta Ads (Face/Insta)", "Google (Pesquisa)", "Google Maps (Meu Negócio)", "OLX / Marketplace", "Indicação", "Já era cliente", "Passante (Frente loja)", "WhatsApp (Orgânico)"];
 const MOTIVOS_PERDA = ["Falta de Estoque", "Preço (Concorrência)", "Prazo/Frete", "Só pesquisando/Curioso", "Cliente vai pensar"];
 const CANAIS_VENDA = ["Online", "Balcão"];
 const METODOS_PAGAMENTO = ["Pix", "Crédito", "Débito", "Dinheiro", "Boleto"];
@@ -105,8 +105,9 @@ export default function App() {
   // ESTADOS DE FILTRO E EDIÇÃO
   const [searchTerm, setSearchTerm] = useState('');
   const [sourceFilter, setSourceFilter] = useState('all'); 
-  const [editingId, setEditingId] = useState(null); // O Segredo da Edição
+  const [editingId, setEditingId] = useState(null);
 
+  // Mantive 'Online' como sugestão inicial, mas você pode mudar clicando nos botões.
   const initialFormState = { clienteNome: '', clienteTelefone: '', clienteEmail: '', clienteCidade: '', clienteUF: 'RS', tipoCliente: 'Consumidor Final', oficinaNome: '', oficinaFoco: '', pecaProcurada: '', veiculoModelo: '', origem: '', houveVenda: null, valorVenda: '', motivoPerda: '', pecaFaltante: '', observacoes: '', canalVenda: 'Online', metodoPagamento: 'Pix' };
   const [formData, setFormData] = useState(initialFormState);
 
@@ -114,7 +115,6 @@ export default function App() {
   useEffect(() => { if (!user) return; const q = query(collection(db, COLLECTION_NAME), orderBy('createdAt', 'desc')); const unsubscribe = onSnapshot(q, (snapshot) => { setAllOpportunities(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); }); return () => unsubscribe(); }, [user]);
   
   useEffect(() => {
-    // Só busca histórico se NÃO estivermos editando (para não sobrescrever dados enquanto edita)
     if(editingId) return; 
     const checkHistory = async () => {
         if (!formData.clienteTelefone || formData.clienteTelefone.length < 8) { setHistoryMatch(null); return; }
@@ -123,14 +123,33 @@ export default function App() {
     const t = setTimeout(checkHistory, 800); return () => clearTimeout(t);
   }, [formData.clienteTelefone, editingId]);
 
-  // --- FILTRAGEM INTELIGENTE ---
+  // --- FILTRAGEM INTELIGENTE (AQUI ESTÁ A CORREÇÃO DE LÓGICA) ---
   const filteredOpportunities = useMemo(() => {
     let data = allOpportunities;
+    
+    // 1. Lógica para ONLINE: Pega tudo que é digital (inclusive WhatsApp) OU que foi marcado como Online
     if (sourceFilter === 'online') {
-      data = data.filter(opp => opp.origem?.includes("Meta") || opp.origem?.includes("Google") || opp.origem?.includes("Site") || opp.vendedorEmail === 'sistema@kobber.com.br');
-    } else if (sourceFilter === 'manual') {
-      data = data.filter(opp => !opp.origem?.includes("Meta") && !opp.origem?.includes("Google") && !opp.origem?.includes("Site") && opp.vendedorEmail !== 'sistema@kobber.com.br');
+      data = data.filter(opp => 
+        opp.origem?.includes("Meta") || 
+        opp.origem?.includes("Google") || 
+        opp.origem?.includes("Site") || 
+        opp.origem?.includes("WhatsApp") || // <--- WhatsApp SEMPRE entra aqui
+        opp.vendedorEmail === 'sistema@kobber.com.br' || 
+        opp.canalVenda === 'Online'
+      );
+    } 
+    // 2. Lógica para MANUAL (Loja): Exclui estritamente tudo que é digital
+    else if (sourceFilter === 'manual') {
+      data = data.filter(opp => 
+        !opp.origem?.includes("Meta") && 
+        !opp.origem?.includes("Google") && 
+        !opp.origem?.includes("Site") && 
+        !opp.origem?.includes("WhatsApp") && // <--- WhatsApp NUNCA entra aqui
+        opp.vendedorEmail !== 'sistema@kobber.com.br' && 
+        opp.canalVenda !== 'Online'
+      );
     }
+
     if (searchTerm) {
       const lowerTerm = searchTerm.toLowerCase();
       data = data.filter(opp => (opp.clienteNome && opp.clienteNome.toLowerCase().includes(lowerTerm)) || (opp.pecaProcurada && opp.pecaProcurada.toLowerCase().includes(lowerTerm)) || (opp.veiculoModelo && opp.veiculoModelo.toLowerCase().includes(lowerTerm)));
@@ -214,7 +233,6 @@ export default function App() {
             // MODO EDIÇÃO: ATUALIZA
             await updateDoc(doc(db, COLLECTION_NAME, editingId), { 
                 ...formData, 
-                // Não alteramos o createdAt original, mas podemos adicionar um updatedAt se quiser
             });
             alert("Registro atualizado com sucesso!");
         } else {
@@ -276,7 +294,7 @@ export default function App() {
               <StatCard title="Vendas" value={stats.vendasCount} icon={CheckCircle} colorClass="bg-purple-500 text-purple-600" />
               <StatCard title="Perdas" value={stats.perdasCount} icon={XCircle} colorClass="bg-red-500 text-red-600" />
             </div>
-            {/* Gráficos e Barras de Meta (Mantidos igual ao anterior) */}
+            {/* Gráficos e Barras de Meta */}
             <div className="bg-white p-6 rounded-xl shadow-sm">
                 <div className="flex justify-between mb-2"><span className="font-bold">Meta ({formatCurrency(META_MENSAL)})</span><span>{stats.progressoMeta.toFixed(1)}%</span></div>
                 <div className="w-full bg-slate-100 rounded-full h-4"><div className="bg-blue-600 h-4 rounded-full transition-all" style={{width: `${stats.progressoMeta}%`}}></div></div>
@@ -325,13 +343,18 @@ export default function App() {
                           <div className="text-xs text-slate-500">{opp.pecaProcurada || <span className='text-orange-500 italic'>Não preenchido</span>} - {opp.veiculoModelo}</div>
                       </td>
                       <td className="p-4">
-                        <span className={`px-2 py-1 rounded text-xs font-bold border ${opp.origem?.includes("Meta") || opp.origem?.includes("Site") ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                        <span className={`px-2 py-1 rounded text-xs font-bold border ${
+                            opp.origem?.includes("Meta") || opp.origem?.includes("Site") 
+                            ? 'bg-purple-50 text-purple-700 border-purple-200' 
+                            : opp.origem?.includes("WhatsApp") 
+                            ? 'bg-green-50 text-green-700 border-green-200' 
+                            : 'bg-slate-50 text-slate-600 border-slate-200'
+                        }`}>
                            {opp.origem || 'Manual'}
                         </span>
                       </td>
                       <td className="p-4">{opp.houveVenda ? <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-xs font-bold">VENDA {opp.valorVenda}</span> : <span className="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-bold">ABERTO</span>}</td>
                       <td className="p-4 text-right flex justify-end gap-2">
-                          {/* BOTÃO DE EDITAR NOVO */}
                           <button onClick={()=>handleEdit(opp)} className="text-orange-500 hover:bg-orange-50 p-2 rounded" title="Editar / Preencher"><Edit2 size={18}/></button>
                           <button onClick={()=>handleGeneratePDF(opp)} className="text-blue-500 hover:bg-blue-50 p-2 rounded"><FileText size={18}/></button>
                           <button onClick={()=>handleDelete(opp)} className="text-red-500 hover:bg-red-50 p-2 rounded"><Trash2 size={18}/></button>
@@ -345,10 +368,9 @@ export default function App() {
           </div>
         )}
 
-        {/* FORMULÁRIO (AGORA SERVE PARA EDITAR TAMBÉM) */}
+        {/* FORMULÁRIO */}
         {currentView === 'form' && (
           <form onSubmit={handleSubmit} className={`bg-white rounded-xl shadow-md p-6 border-t-4 ${editingId ? 'border-orange-500' : 'border-blue-600'} animate-fade-in`}>
-            {/* CABEÇALHO DO FORMULÁRIO - MUDA SE FOR EDIÇÃO */}
             {editingId && (
                 <div className="bg-orange-50 border border-orange-200 p-4 mb-6 rounded flex justify-between items-center">
                     <div className="flex items-center gap-2 text-orange-800 font-bold"><Edit2 size={20}/> <span>EDITANDO REGISTRO: {formData.clienteNome}</span></div>
@@ -356,7 +378,6 @@ export default function App() {
                 </div>
             )}
             
-            {/* HISTÓRICO (Só aparece se for NOVO registro) */}
             {!editingId && historyMatch && <div className="mb-6 bg-blue-50 p-4 rounded border-blue-200 flex gap-3"><History className="text-blue-600"/><div className="flex-1"><h4 className="font-bold text-blue-800">Cliente Recorrente!</h4><p className="text-sm">Última compra de <strong>{historyMatch.clienteNome}</strong> em {new Date(historyMatch.createdAt.seconds*1000).toLocaleDateString()}.</p><button type="button" onClick={loadHistoryData} className="text-xs bg-blue-600 text-white px-3 py-1 rounded mt-2">Usar dados</button></div></div>}
             
             <SectionTitle icon={Briefcase} title="1. Cliente" />
