@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Car, LogOut, LayoutDashboard, PlusCircle, List
+  Car, LogOut, LayoutDashboard, PlusCircle, List, Kanban
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
   getFirestore, collection, addDoc, updateDoc, serverTimestamp, query,
-  orderBy, onSnapshot, getDocs, deleteDoc, doc, where, limit
+  orderBy, onSnapshot, getDocs, deleteDoc, doc, where, limit, arrayUnion
 } from 'firebase/firestore';
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut
@@ -18,10 +18,12 @@ import LoginScreen from './components/LoginScreen';
 import Dashboard from './components/Dashboard';
 import LeadForm from './components/LeadForm';
 import LeadList from './components/LeadList';
+import KanbanBoard from './components/KanbanBoard';
 
 // Utils / Config
 import { firebaseConfig } from './firebaseConfig';
 import { ADMIN_EMAILS, META_MENSAL } from './utils/constants';
+import { createFunnelEvent, inferStage, formatStageMessage } from './utils/funnelActions';
 
 // Inicialização
 const app = initializeApp(firebaseConfig);
@@ -43,7 +45,8 @@ export default function App() {
   const initialFormState = {
     clienteNome: '', clienteTelefone: '', clienteEmail: '', clienteCidade: '',
     clienteUF: 'RS', tipoCliente: 'Consumidor Final', oficinaNome: '', oficinaFoco: '',
-    pecaProcurada: '', veiculoModelo: '', origem: '', houveVenda: null, valorVenda: '',
+    pecaProcurada: '', veiculoModelo: '', origem: '', campanhaOrigem: '',
+    houveVenda: null, valorVenda: '',
     motivoPerda: '', pecaFaltante: '', observacoes: '', canalVenda: 'Online', metodoPagamento: 'Pix'
   };
   const [formData, setFormData] = useState(initialFormState);
@@ -172,10 +175,15 @@ export default function App() {
         await updateDoc(doc(db, COLLECTION_NAME, editingId), { ...formData });
         alert("Registro atualizado com sucesso!");
       } else {
+        const initialEvent = createFunnelEvent(null, 'novo', user.email, false);
         await addDoc(collection(db, COLLECTION_NAME), {
           ...formData,
+          estagio: 'novo',
+          funnelHistory: [initialEvent],
           vendedorEmail: user.email,
           vendedorUid: user.uid,
+          clienteRecorrente: !!historyMatch,
+          capturaAutomatica: false,
           createdAt: serverTimestamp()
         });
         alert("Nova oportunidade registrada com sucesso!");
@@ -194,13 +202,36 @@ export default function App() {
     }
   };
 
+  // --- PIPELINE: MUDANÇA DE ESTÁGIO ---
+  const handleStageChange = async (oppId, newStage, actionTaken) => {
+    try {
+      const opp = allOpportunities.find(o => o.id === oppId);
+      const currentStage = opp ? inferStage(opp) : 'novo';
+      const event = createFunnelEvent(currentStage, newStage, user.email, actionTaken);
+
+      const updateData = {
+        estagio: newStage,
+        funnelHistory: arrayUnion(event),
+      };
+
+      // Sync houveVenda field with closed stages
+      if (newStage === 'fechado_ganho') updateData.houveVenda = true;
+      if (newStage === 'fechado_perdido') updateData.houveVenda = false;
+
+      await updateDoc(doc(db, COLLECTION_NAME, oppId), updateData);
+    } catch (error) {
+      console.error('Erro ao mover lead:', error);
+      alert('Erro ao atualizar estágio. Tente novamente.');
+    }
+  };
+
   // --- EXPORTAR E AÇÕES ESPECÍFICAS DA TABELA ---
   const handleWhatsApp = (c) => {
     if (!c.clienteTelefone) return alert("Cliente não possui telefone cadastrado.");
     const p = c.clienteTelefone.replace(/\D/g, '');
     if (p.length < 10) return alert("Número de telefone parece inválido.");
     const msg = c.houveVenda
-      ? `Olá ${c.clienteNome.split(' ')[0]}, tudo bem? Agradecemos a confiança! 🚗`
+      ? formatStageMessage('fechado_ganho', c) || `Olá ${c.clienteNome.split(' ')[0]}, tudo bem? Agradecemos a confiança! 🚗`
       : `Olá ${c.clienteNome.split(' ')[0]}, tudo bem? Vi que conversamos sobre *${c.pecaProcurada || 'uma peça'}*. Posso te ajudar com isso hoje?`;
     window.open(`https://wa.me/${p.length <= 11 ? `55${p}` : p}?text=${encodeURIComponent(msg)}`, '_blank');
   };
@@ -274,50 +305,75 @@ export default function App() {
 
       {/* TABS DE APPS NAVEGAÇÃO */}
       <div className="bg-white shadow-sm border-b border-slate-200 sticky top-[73px] z-40">
-        <div className="max-w-6xl mx-auto flex px-4 gap-2">
+        <div className="max-w-6xl mx-auto flex px-4 gap-1 overflow-x-auto">
           <button
             onClick={() => { setCurrentView('form'); handleCancelEdit(); }}
-            className={`flex-1 py-4 font-bold text-sm flex justify-center items-center gap-2 transition-all border-b-[3px] ${currentView === 'form'
-                ? 'text-indigo-600 border-indigo-600'
-                : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
+            className={`flex-1 py-4 font-bold text-sm flex justify-center items-center gap-2 transition-all border-b-[3px] min-w-[100px] ${currentView === 'form'
+              ? 'text-indigo-600 border-indigo-600'
+              : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
               }`}
           >
             <PlusCircle size={18} className={currentView === 'form' ? 'animate-pulse' : ''} />
-            {editingId ? 'EDITANDO' : 'NOVO REGISTRO'}
+            <span className="hidden sm:inline">{editingId ? 'EDITANDO' : 'NOVO REGISTRO'}</span>
+            <span className="sm:hidden text-xs">{editingId ? 'EDIT' : 'NOVO'}</span>
+          </button>
+
+          <button
+            onClick={() => setCurrentView('pipeline')}
+            className={`flex-1 py-4 font-bold text-sm flex justify-center items-center gap-2 transition-all border-b-[3px] min-w-[100px] ${currentView === 'pipeline'
+              ? 'text-indigo-600 border-indigo-600'
+              : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
+              }`}
+          >
+            <Kanban size={18} />
+            <span className="hidden sm:inline">PIPELINE</span>
+            <span className="sm:hidden text-xs">FUNIL</span>
           </button>
 
           <button
             onClick={() => setCurrentView('dashboard')}
-            className={`flex-1 py-4 font-bold text-sm flex justify-center items-center gap-2 transition-all border-b-[3px] ${currentView === 'dashboard'
-                ? 'text-indigo-600 border-indigo-600'
-                : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
+            className={`flex-1 py-4 font-bold text-sm flex justify-center items-center gap-2 transition-all border-b-[3px] min-w-[100px] ${currentView === 'dashboard'
+              ? 'text-indigo-600 border-indigo-600'
+              : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
               }`}
           >
             <LayoutDashboard size={18} />
-            METAS & DASH
+            <span className="hidden sm:inline">METAS & DASH</span>
+            <span className="sm:hidden text-xs">DASH</span>
           </button>
 
           {isAdmin && (
             <button
               onClick={() => setCurrentView('admin')}
-              className={`flex-1 py-4 font-bold text-sm flex justify-center items-center gap-2 transition-all border-b-[3px] ${currentView === 'admin'
-                  ? 'text-indigo-600 border-indigo-600'
-                  : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
+              className={`flex-1 py-4 font-bold text-sm flex justify-center items-center gap-2 transition-all border-b-[3px] min-w-[100px] ${currentView === 'admin'
+                ? 'text-indigo-600 border-indigo-600'
+                : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
                 }`}
             >
               <List size={18} />
-              GERENCIAR (DB)
+              <span className="hidden sm:inline">GERENCIAR (DB)</span>
+              <span className="sm:hidden text-xs">DB</span>
             </button>
           )}
         </div>
       </div>
 
       {/* ÁREA PRINCIPAL RENDERIZADOR */}
-      <main className="max-w-6xl mx-auto px-4 mt-8">
+      <main className={`mx-auto mt-8 ${currentView === 'pipeline' ? 'max-w-full px-4 lg:px-8' : 'max-w-6xl px-4'}`}>
+
+        {currentView === 'pipeline' && (
+          <KanbanBoard
+            opportunities={allOpportunities}
+            onStageChange={handleStageChange}
+            onQuickWhatsApp={handleWhatsApp}
+            onEditLead={handleEdit}
+          />
+        )}
 
         {currentView === 'dashboard' && (
           <Dashboard
             stats={stats}
+            allOpportunities={allOpportunities}
             selectedDate={selectedDate}
             setSelectedDate={setSelectedDate}
           />
