@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Car, LogOut, LayoutDashboard, PlusCircle, List, Kanban
+  Car, LogOut, LayoutDashboard, PlusCircle, List, Kanban, Boxes
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
@@ -19,6 +19,7 @@ import Dashboard from './components/Dashboard';
 import LeadForm from './components/LeadForm';
 import LeadList from './components/LeadList';
 import KanbanBoard from './components/KanbanBoard';
+import StockRadar from './components/StockRadar';
 
 // Utils / Config
 import { firebaseConfig } from './firebaseConfig';
@@ -134,7 +135,7 @@ export default function App() {
   const handleLogin = async (email, password) => {
     try {
       await signInWithEmailAndPassword(auth, email, password);
-    } catch (err) {
+    } catch {
       alert("Erro ao entrar. Verifique credenciais.");
     }
   };
@@ -342,6 +343,18 @@ export default function App() {
             <span className="sm:hidden text-xs">DASH</span>
           </button>
 
+          <button
+            onClick={() => setCurrentView('estoque')}
+            className={`flex-1 py-4 font-bold text-sm flex justify-center items-center gap-2 transition-all border-b-[3px] min-w-[100px] ${currentView === 'estoque'
+              ? 'text-indigo-600 border-indigo-600'
+              : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
+              }`}
+          >
+            <Boxes size={18} />
+            <span className="hidden sm:inline">ESTOQUE</span>
+            <span className="sm:hidden text-xs">FALTA</span>
+          </button>
+
           {isAdmin && (
             <button
               onClick={() => setCurrentView('admin')}
@@ -377,6 +390,10 @@ export default function App() {
             selectedDate={selectedDate}
             setSelectedDate={setSelectedDate}
           />
+        )}
+
+        {currentView === 'estoque' && (
+          <StockRadar allOpportunities={allOpportunities} />
         )}
 
         {currentView === 'admin' && isAdmin && (
